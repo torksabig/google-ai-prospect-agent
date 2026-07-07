@@ -11,7 +11,7 @@ from search_agent import (
     expand_companies_to_rows,
     filter_companies,
 )
-from notion_pipeline import build_prospect_notes
+from notion_pipeline import build_prospect_notes, rows_to_pipeline
 
 
 def test_expand_dual_contacts():
@@ -133,3 +133,44 @@ def test_load_hermes_json_flattens_companies_contacts():
     assert rows[0]["company_domain"] == "mecmetal.fi"
     assert rows[0]["contact_name"] == "Erik Hiltunen"
     assert rows[0]["evidence_urls"] == "https://www.mecmetal.fi/fi/yhteystiedot/"
+
+
+def test_rows_to_pipeline_exports_only_outreach_ready_named_people():
+    rows = [
+        {
+            "company_name": "Mecmetal Oy",
+            "company_domain": "mecmetal.fi",
+            "contact_name": "Erik Hiltunen",
+            "contact_title": "Engineering Manager",
+            "contact_phone": "+358 40 672 6783",
+            "phone_verification_status": "person_page_match",
+            "verified_for_outreach": "yes",
+            "company_url": "https://www.mecmetal.fi/",
+        },
+        {
+            "company_name": "Pori Energia Oy",
+            "company_domain": "porienergia.fi",
+            "contact_name": "Asiakaspalvelu",
+            "contact_title": "CTO",
+            "contact_phone": "09 2315 0465",
+            "phone_verification_status": "company_switchboard_only",
+            "verified_for_outreach": "no",
+            "company_url": "https://porienergia.fi/",
+        },
+        {
+            "company_name": "Haining Engineering",
+            "company_domain": "haining.fi",
+            "contact_name": "Haining Engineering",
+            "contact_title": "CTO",
+            "contact_phone": "+358 40 111 2222",
+            "phone_verification_status": "direct_claim_unverified",
+            "verified_for_outreach": "no",
+            "company_url": "https://haining.fi/",
+        },
+    ]
+
+    pipeline, skipped = rows_to_pipeline(rows)
+
+    assert len(pipeline) == 1
+    assert skipped == 2
+    assert pipeline[0]["contact_name"] == "Erik Hiltunen"

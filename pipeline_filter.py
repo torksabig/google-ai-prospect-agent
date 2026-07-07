@@ -59,6 +59,13 @@ _GENERIC_NAMES = frozenset(
         "admin",
         "yhteyshenkilö",
         "yhteys",
+        "asiakaspalvelu",
+        "customer service",
+        "customer support",
+        "reception",
+        "front desk",
+        "sales team",
+        "support team",
     }
 )
 
@@ -66,7 +73,6 @@ _ALLOWED_VERIFY_STATUSES = frozenset(
     {
         "person_page_match",
         "dial_confirmed",
-        "company_switchboard_only",
     }
 )
 
@@ -74,9 +80,26 @@ REJECT_REASONS = (
     "empty_contact_name",
     "title_only_name",
     "generic_contact_name",
+    "company_like_contact_name",
     "empty_contact_phone",
     "invalid_phone",
     "verification_failed",
+)
+
+_COMPANY_SUFFIXES = frozenset(
+    {
+        "oy",
+        "oyj",
+        "ltd",
+        "inc",
+        "llc",
+        "plc",
+        "ab",
+        "gmbh",
+        "group",
+        "company",
+        "co",
+    }
 )
 
 
@@ -132,6 +155,30 @@ def is_generic_contact_name(name: str) -> bool:
     return cleaned in _GENERIC_NAMES
 
 
+def _name_like_tokens(text: str) -> list[str]:
+    cleaned = _ascii_fold((text or "").strip().lower())
+    cleaned = re.sub(r"[^a-z0-9\s-]", " ", cleaned)
+    tokens = [t for t in re.split(r"[\s.-]+", cleaned) if len(t) > 1]
+    return [t for t in tokens if t not in _COMPANY_SUFFIXES]
+
+
+def looks_like_company_contact_name(name: str, company_name: str, company_domain: str = "") -> bool:
+    """Reject contact names that are really the company or part of it."""
+    name_tokens = _name_like_tokens(name)
+    if not name_tokens:
+        return False
+
+    company_tokens = set(_name_like_tokens(company_name))
+    domain_head = (company_domain or "").strip().lower().split("/")[0].split(":")[0]
+    domain_label = domain_head.split(".")[0] if domain_head else ""
+    company_tokens.update(_name_like_tokens(domain_label))
+
+    if not company_tokens:
+        return False
+
+    return set(name_tokens).issubset(company_tokens)
+
+
 def _has_verification_fields(rows: list[dict[str, Any]]) -> bool:
     for row in rows:
         if (row.get("phone_verification_status") or "").strip():
@@ -163,6 +210,12 @@ def outreach_reject_reason(
         return "title_only_name"
     if is_generic_contact_name(name):
         return "generic_contact_name"
+    if looks_like_company_contact_name(
+        name,
+        (row.get("company_name") or "").strip(),
+        (row.get("company_domain") or "").strip(),
+    ):
+        return "company_like_contact_name"
     if not phone:
         return "empty_contact_phone"
     if is_invalid_phone(phone):

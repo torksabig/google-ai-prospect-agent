@@ -5,6 +5,7 @@ Statuses:
   person_page_match           name + phone tied on person/team page
   company_switchboard_only    main line only
   no_phone_found              missing number
+  invalid_contact_name        generic/company-like/non-person contact
   role_verified_phone_unverified  contact role OK, phone not person-tied
   direct_claim_unverified     mobile/direct claimed but weak page link
 """
@@ -14,11 +15,18 @@ import re
 import unicodedata
 from typing import Any
 
+from pipeline_filter import (
+    is_generic_contact_name,
+    is_title_only_name,
+    looks_like_company_contact_name,
+)
+
 PHONE_STATUSES = (
     "dial_confirmed",
     "person_page_match",
     "company_switchboard_only",
     "no_phone_found",
+    "invalid_contact_name",
     "role_verified_phone_unverified",
     "direct_claim_unverified",
 )
@@ -102,8 +110,24 @@ def verify_phone_row(row: dict[str, Any]) -> dict[str, Any]:
     phone = (row.get("contact_phone") or "").strip()
     phone_type = (row.get("phone_type") or "unknown").strip().lower()
     contact_name = (row.get("contact_name") or "").strip()
+    company_name = (row.get("company_name") or "").strip()
+    company_domain = (row.get("company_domain") or "").strip()
     confidence = float(row.get("confidence") or 0)
     urls = _urls_from_row(row)
+
+    if (
+        not contact_name
+        or is_title_only_name(contact_name)
+        or is_generic_contact_name(contact_name)
+        or looks_like_company_contact_name(contact_name, company_name, company_domain)
+    ):
+        return {
+            "phone_verification_status": "invalid_contact_name",
+            "phone_verification_reason": "Contact name is generic, title-only, or company-like — not a named person",
+            "phone_owner_match": "no",
+            "phone_page_match": "no",
+            "verified_for_outreach": "no",
+        }
 
     if not phone or not _PHONE_DIGITS.search(phone.replace(" ", "")):
         return {

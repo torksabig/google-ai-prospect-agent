@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from pipeline_filter import filter_outreach_ready
+
 log = logging.getLogger(__name__)
 
 NOTION_VERSION = "2022-06-28"
@@ -475,22 +477,24 @@ def _group_by_company(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, An
 def rows_to_pipeline(
     rows: list[dict[str, Any]], *, source: str = DEFAULT_LEAD_SOURCE
 ) -> tuple[list[dict[str, str]], int]:
-    """One pipeline row per contact (skips rows without contact_name)."""
+    """One pipeline row per outreach-ready contact."""
     sync_dt = datetime.now(timezone.utc)
     out: list[dict[str, str]] = []
     seen: set[str] = set()
-    skipped_no_contact = 0
-    for row in rows:
+    filter_result = filter_outreach_ready(rows, require_verification=None)
+    skipped = filter_result.removed_count
+    for row in filter_result.kept:
         if not _has_meaningful_contact(row):
-            skipped_no_contact += 1
+            skipped += 1
             continue
         key = contact_lead_key(row)
         if key in seen:
+            skipped += 1
             continue
         seen.add(key)
         out.append(pipeline_row(row, source=source, sync_dt=sync_dt))
     out.sort(key=lambda r: ((r.get("company_name") or "").lower(), (r.get("contact_name") or "").lower()))
-    return out, skipped_no_contact
+    return out, skipped
 
 
 def pipeline_to_crm_row(pr: dict[str, str]) -> dict[str, str]:
@@ -543,7 +547,7 @@ def write_pipeline_csv(
 ) -> tuple[Path, int, int]:
     """Write CRM-format pipeline CSV/TSV plus detailed contact CSV."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    pipeline, skipped_no_contact = rows_to_pipeline(rows, source=source)
+    pipeline, skipped = rows_to_pipeline(rows, source=source)
     crm_rows = [pipeline_to_crm_row(pr) for pr in pipeline]
 
     company_path = path.parent / "notion_pipeline.csv"
@@ -574,14 +578,14 @@ def write_pipeline_csv(
         path.write_text(company_path.read_text(encoding="utf-8"), encoding="utf-8")
 
     log.info(
-        "Pipeline: %d exported, %d skipped (no contact) → %s, %s, %s",
+        "Pipeline: %d exported, %d skipped (failed outreach rules or duplicate) → %s, %s, %s",
         len(crm_rows),
-        skipped_no_contact,
+        skipped,
         company_path,
         tsv_path,
         detailed_path,
     )
-    return company_path, len(crm_rows), skipped_no_contact
+    return company_path, len(crm_rows), skipped
 
 
 def _notion_headers(token: str) -> dict[str, str]:

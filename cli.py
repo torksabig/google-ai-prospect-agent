@@ -814,7 +814,7 @@ def cmd_export_pipeline(args: argparse.Namespace) -> int:
     print(f"Input: {len(input_rows)} rows total")
     if args.qualified_only:
         print(f"After outreach filter: {len(rows)} rows")
-    print(f"Exported {exported} rows, skipped {skipped} (no contact)")
+    print(f"Exported {exported} rows, skipped {skipped} (failed outreach rules or duplicate)")
     print(f"Contacts-only CSV → {contacts_path} ({contacts_count} rows)")
     print(f"CRM pipeline CSV → {company_path}")
     print(f"Tab-separated TSV → {out_dir / 'notion_pipeline.tsv'}")
@@ -961,7 +961,7 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
             pipeline_path,
             source=args.source,
         )
-        print(f"Pipeline CSV → {company_path} ({exported} exported, {skipped} skipped)")
+        print(f"Pipeline CSV → {company_path} ({exported} exported, {skipped} skipped by rules/duplicate)")
         log_event(
             "export_pipeline",
             run_id=run_id,
@@ -1046,7 +1046,7 @@ def cmd_import_hermes(args: argparse.Namespace) -> int:
             pipeline_path,
             source=args.source,
         )
-        print(f"Pipeline CSV → {company_path} ({exported} exported, {skipped} skipped)")
+        print(f"Pipeline CSV → {company_path} ({exported} exported, {skipped} skipped by rules/duplicate)")
         if args.sync_notion:
             token, db_id = load_notion_config()
             if not token or not db_id:

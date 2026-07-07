@@ -1,6 +1,7 @@
 from pipeline_filter import (
     filter_outreach_ready,
     is_invalid_phone,
+    looks_like_company_contact_name,
     is_title_only_name,
     outreach_reject_reason,
 )
@@ -31,6 +32,18 @@ def test_keep_name_and_valid_phone():
         "contact_phone": "+358 40 154 9393",
     }
     assert outreach_reject_reason(row) is None
+
+
+def test_reject_company_like_contact_name():
+    assert looks_like_company_contact_name("Haining Engineering", "Haining Engineering")
+    assert looks_like_company_contact_name("Pori Energia", "Pori Energia Oy")
+    row = {
+        "company_name": "WSP Finland Oy",
+        "company_domain": "wsp.fi",
+        "contact_name": "Finland Oy",
+        "contact_phone": "+358 40 154 9393",
+    }
+    assert outreach_reject_reason(row) == "company_like_contact_name"
 
 
 def test_filter_counts():
@@ -72,4 +85,5 @@ def test_verification_switchboard_allowed():
         }
     ]
     result = filter_outreach_ready(rows)
-    assert result.kept_count == 1
+    assert result.kept_count == 0
+    assert result.reason_counts["verification_failed"] == 1

@@ -9,7 +9,7 @@ def test_no_phone():
 
 def test_switchboard():
     r = verify_phone_row({
-        "contact_name": "CEO",
+        "contact_name": "Mika Saariaho",
         "contact_phone": "+358 10 1234",
         "phone_type": "switchboard",
         "phone_source_url": "https://co.fi/yhteystiedot",
@@ -39,6 +39,31 @@ def test_direct_unverified():
     })
     assert r["phone_verification_status"] == "direct_claim_unverified"
     assert r["verified_for_outreach"] == "no"
+
+
+def test_invalid_contact_name_generic_or_company_like():
+    r = verify_phone_row(
+        {
+            "company_name": "Pori Energia Oy",
+            "company_domain": "porienergia.fi",
+            "contact_name": "Asiakaspalvelu",
+            "contact_phone": "+358 10 1234",
+            "phone_type": "direct",
+        }
+    )
+    assert r["phone_verification_status"] == "invalid_contact_name"
+    assert r["verified_for_outreach"] == "no"
+
+    r2 = verify_phone_row(
+        {
+            "company_name": "Haining Engineering",
+            "company_domain": "haining.fi",
+            "contact_name": "Haining Engineering",
+            "contact_phone": "+358 40 111 2222",
+            "phone_type": "mobile",
+        }
+    )
+    assert r2["phone_verification_status"] == "invalid_contact_name"
 
 
 def test_dial_confirmed_override():
