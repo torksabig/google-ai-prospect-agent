@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
+from dashboard_logger import finish_run, log_event, start_run
+
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
@@ -786,6 +788,7 @@ def cmd_export_pipeline(args: argparse.Namespace) -> int:
     src = Path(args.input)
     if not src.exists():
         log.error("Input not found: %s", src)
+        log_event("export_pipeline", status="error", message=f"Input not found: {src}")
         return 1
     input_rows = _load_csv(src)
     if not input_rows:
@@ -816,6 +819,12 @@ def cmd_export_pipeline(args: argparse.Namespace) -> int:
     print(f"CRM pipeline CSV → {company_path}")
     print(f"Tab-separated TSV → {out_dir / 'notion_pipeline.tsv'}")
     print(f"Detailed CSV → {out_dir / 'notion_pipeline_detailed.csv'}")
+    log_event(
+        "export_pipeline",
+        status="success",
+        message=f"{exported} exported, {skipped} skipped",
+        details={"path": str(company_path), "input_rows": len(input_rows)},
+    )
     return 0
 
 
@@ -824,6 +833,21 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
     import os
 
     from hermes_search import HermesSearchSpec, run_hermes_search
+
+    filters = {
+        "country": args.country,
+        "industries": args.industries,
+        "revenue": args.revenue,
+        "titles": args.titles,
+        "secondary_titles": args.secondary_titles,
+        "limit": args.limit,
+        "contacts_per_company": args.contacts_per_company,
+        "provider": args.provider,
+        "export_pipeline": args.export_pipeline,
+        "sync_notion": args.sync_notion,
+    }
+    run_id = os.environ.get("PROSPECT_DASHBOARD_RUN_ID") or start_run(filters, source="cli")
+    log_event("search_started", run_id=run_id, message="Hermes search started", details=filters)
 
     if args.provider == "gemini":
         log.info("hermes-search --provider gemini → LLM grounded search (cli.py search)")
@@ -877,6 +901,7 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
             "Hermes search returned 0 rows — try --provider serper with GAP_SERPER_API_KEY "
             "or widen --industries"
         )
+        log_event("companies_found", run_id=run_id, status="warning", message="0 companies found")
 
     if args.verify:
         rows = verify_rows(rows)
@@ -903,6 +928,21 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
 
     companies = _company_count(rows)
     phones = sum(1 for r in rows if (r.get("contact_phone") or "").strip())
+    summary = {
+        "companies": companies,
+        "contact_rows": len(rows),
+        "phones": phones,
+        "provider": args.provider,
+        "queries": meta.get("queries_run", 0),
+        "csv": str(csv_path),
+    }
+    log_event(
+        "companies_found",
+        run_id=run_id,
+        status="success",
+        message=f"{companies} companies, {len(rows)} contacts, {phones} phones",
+        details=summary,
+    )
     print(
         f"Hermes search: {companies} companies | {len(rows)} contact rows | "
         f"{phones} with phones | provider={args.provider} | queries={meta.get('queries_run', 0)}"
@@ -922,10 +962,19 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
             source=args.source,
         )
         print(f"Pipeline CSV → {company_path} ({exported} exported, {skipped} skipped)")
+        log_event(
+            "export_pipeline",
+            run_id=run_id,
+            status="success",
+            message=f"{exported} exported, {skipped} skipped",
+            details={"path": str(company_path)},
+        )
         if args.sync_notion:
             token, db_id = load_notion_config()
             if not token or not db_id:
                 log.error("Set NOTION_API_KEY and NOTION_DATABASE_ID before --sync-notion")
+                log_event("notion_sync", run_id=run_id, status="error", message="Missing Notion credentials")
+                finish_run(run_id, status="error", message="Missing Notion credentials", summary=summary)
                 return 1
             stats = sync_pipeline_to_notion(
                 normalize_sync_rows(_load_csv(company_path)),
@@ -933,12 +982,27 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
                 token=token,
                 state_path=Path(args.state_file),
             )
-            print(
-                f"Notion sync: {stats['created']} created, {stats['updated']} updated, "
+            notion_msg = (
+                f"{stats['created']} created, {stats['updated']} updated, "
                 f"{stats['skipped']} skipped, {stats.get('skipped_no_contact', 0)} skipped (no contact), "
                 f"{stats['errors']} errors"
             )
+            print(f"Notion sync: {notion_msg}")
+            log_event(
+                "notion_sync",
+                run_id=run_id,
+                status="success" if stats["errors"] == 0 else "error",
+                message=notion_msg,
+                details=stats,
+            )
+            finish_run(
+                run_id,
+                status="success" if stats["errors"] == 0 else "error",
+                message=notion_msg,
+                summary=summary,
+            )
             return 0 if stats["errors"] == 0 else 1
+    finish_run(run_id, status="success", message="Hermes search completed", summary=summary)
     return 0
 
 
@@ -1029,6 +1093,7 @@ def cmd_sync_notion(args: argparse.Namespace) -> int:
     src = Path(args.input)
     if not src.exists():
         log.error("Input not found: %s", src)
+        log_event("notion_sync", status="error", message=f"Input not found: {src}")
         return 1
     token = args.notion_token or load_notion_config()[0]
     db_id = args.database_id or load_notion_config()[1]
@@ -1055,10 +1120,17 @@ def cmd_sync_notion(args: argparse.Namespace) -> int:
         state_path=Path(args.state_file),
     )
     skipped_no_contact = stats.get("skipped_no_contact", 0)
-    print(
-        f"Notion sync: {stats['created']} created, {stats['updated']} updated, "
+    notion_msg = (
+        f"{stats['created']} created, {stats['updated']} updated, "
         f"{stats['skipped']} skipped, {skipped_no_contact} skipped (no contact), "
         f"{stats['errors']} errors"
+    )
+    print(f"Notion sync: {notion_msg}")
+    log_event(
+        "notion_sync",
+        status="success" if stats["errors"] == 0 else "error",
+        message=notion_msg,
+        details=stats,
     )
     return 0 if stats["errors"] == 0 else 1
 
