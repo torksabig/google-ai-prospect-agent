@@ -1,0 +1,45 @@
+{
+  "_comment": "Maps pipeline internal keys to Notion CRM columns (Pipeline template).",
+  "properties": {
+    "name": "Company name",
+    "account_owner": "Account owner",
+    "stage": "Deal stage",
+    "email": "Email",
+    "phone": "Phone number",
+    "description": "Notes",
+    "brief": "Notes",
+    "date_added": "Date Added",
+    "source": "Lead source",
+    "website": "Website"
+  },
+  "embed_in_notes": [],
+  "lead_key_notes_prefix": "[lk:{value}]",
+  "lead_key_query": "description",
+  "stage_value_map": {
+    "New": "New",
+    "Ready": "Discovery",
+    "Contacted": "Negotiation",
+    "Qualified": "Won"
+  },
+  "source_value_map": {
+    "ICP Search": "Outbound",
+    "Outbound": "Outbound"
+  },
+  "type_overrides": {
+    "source": "multi_select",
+    "stage": "select",
+    "account_owner": "people",
+    "email": "email",
+    "date_added": "date",
+    "revenue": "number"
+  },
+  "unmapped_pipeline_fields": {
+    "lead_key": "embedded in Notes prefix for dedup",
+    "contact_name": "in Notes as Key contact",
+    "title": "in Notes as Key contact",
+    "industry": "detailed CSV only",
+    "country": "detailed CSV only",
+    "phone_status": "detailed CSV only",
+    "outreach_ok": "detailed CSV only"
+  }
+}

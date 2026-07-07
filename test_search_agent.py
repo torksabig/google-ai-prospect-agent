@@ -1,6 +1,47 @@
 """Tests for google-ai-prospect-agent helpers."""
 
-from search_agent import _parse_json, filter_companies, _normalize_company
+import json
+from tempfile import TemporaryDirectory
+from pathlib import Path
+
+from cli import _load_hermes_json
+from search_agent import (
+    _normalize_company,
+    _parse_json,
+    expand_companies_to_rows,
+    filter_companies,
+)
+from notion_pipeline import build_prospect_notes
+
+
+def test_expand_dual_contacts():
+    companies = [
+        {
+            "company_name": "Acme Oy",
+            "company_domain": "acme.fi",
+            "contacts": [
+                {"contact_name": "A", "contact_phone": "+358 50 1", "phone_type": "mobile"},
+                {"contact_name": "B", "contact_phone": "+358 9 123", "phone_type": "switchboard"},
+            ],
+        }
+    ]
+    rows = expand_companies_to_rows(companies, contacts_per_company=2)
+    assert len(rows) == 2
+    assert rows[0]["company_name"] == "Acme Oy"
+    assert rows[1]["contact_name"] == "B"
+
+
+def test_filter_dual_contact_company():
+    co = {
+        "company_name": "Acme",
+        "company_domain": "acme.fi",
+        "company_url": "https://acme.fi",
+        "contacts": [
+            {"contact_name": "A", "contact_phone": "+358 50 123 4567", "phone_type": "mobile"},
+        ],
+    }
+    rows = filter_companies([co], require_phone=True, contacts_per_company=2)
+    assert len(rows) == 1
 
 
 def test_parse_json_with_fences():
@@ -34,3 +75,61 @@ def test_parse_json_embedded():
 def test_normalize_infers_mobile():
     row = _normalize_company({"contact_phone": "+358501234567", "phone_type": "unknown"})
     assert row["phone_type"] == "mobile"
+
+
+def test_build_prospect_notes_uses_brief_first_format():
+    notes = build_prospect_notes(
+        {
+            "company_name": "Mecmetal Oy",
+            "company_url": "https://www.mecmetal.fi/",
+            "contact_name": "Jani Toropainen",
+            "contact_title": "Engineering Manager",
+            "contact_phone": "+358 40 672 6783",
+            "phone_type": "mobile",
+            "contact_brief": "Jani Toropainen on Mecmetal Oy:n Engineering Manager.",
+            "phone_verification_status": "person_page_match",
+            "phone_verification_reason": "Mobile on official contact page",
+        }
+    )
+
+    assert notes.startswith("Jani Toropainen on Mecmetal Oy:n Engineering Manager.\n\n")
+    assert (
+        "**Jani Toropainen** — Engineering Manager\n\n"
+        "Website: https://www.mecmetal.fi/\n\n"
+        "Puhelin: +358 40 672 6783 (mobile)\n\n"
+        "Verify: person_page_match — Mobile on official contact page"
+    ) in notes
+
+
+def test_load_hermes_json_flattens_companies_contacts():
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "hermes.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "companies": [
+                        {
+                            "company_name": "Mecmetal Oy",
+                            "company_url": "https://www.mecmetal.fi/",
+                            "contacts": [
+                                {
+                                    "contact_name": "Erik Hiltunen",
+                                    "contact_title": "Engineering Manager",
+                                    "contact_phone": "+358 40 672 6783",
+                                    "phone_type": "mobile",
+                                    "evidence_urls": ["https://www.mecmetal.fi/fi/yhteystiedot/"],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        rows = _load_hermes_json(path)
+
+    assert len(rows) == 1
+    assert rows[0]["company_domain"] == "mecmetal.fi"
+    assert rows[0]["contact_name"] == "Erik Hiltunen"
+    assert rows[0]["evidence_urls"] == "https://www.mecmetal.fi/fi/yhteystiedot/"

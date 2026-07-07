@@ -1,4 +1,5 @@
 .env
 .venv/
 output/
+.prospect-agent-root
 __pycache__/

@@ -1,0 +1,17 @@
+{
+  "cycle_hours": 6,
+  "enrich_limit": 25,
+  "search_limit": 20,
+  "search_every_cycles": 4,
+  "use_llm": false,
+  "max_llm_calls": 0,
+  "contacts_per_company": 2,
+  "icp": {
+    "country": "Finland",
+    "industry": "proptech, property technology, kiinteistöteknologia, teollisuusautomaatio",
+    "revenue": "10M - 5B EUR",
+    "titles": "Head of R&D, CTO, VP Engineering, teknologiajohtaja, tutkimusjohtaja",
+    "secondary_titles": "CEO, toimitusjohtaja, founder",
+    "product_context": "B2B technology for property tech and industrial innovation buyers."
+  }
+}
