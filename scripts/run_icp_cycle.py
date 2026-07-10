@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Background ICP cycle: enrich/search → verify → pipeline CSV → Notion."""
+"""Background ICP cycle: enrich/search → verify → call list CSV (Notion optional)."""
 
 from __future__ import annotations
 
@@ -108,14 +108,27 @@ def main() -> int:
         latest = input_csv
 
     _run(cli + ["verify", "-i", str(latest), "--basename", f"icp_verified_{cycle}"], ok_fail=True)
-    _run(cli + ["export-pipeline", "-i", str(latest), "--basename", "notion_pipeline"])
+    _run(
+        cli
+        + [
+            "export-call-list",
+            "-i",
+            str(latest),
+            "--append",
+            "--source-run-id",
+            f"icp_cycle_{cycle}",
+        ],
+        ok_fail=True,
+    )
 
     import os
 
-    if os.environ.get("NOTION_API_KEY") and os.environ.get("NOTION_DATABASE_ID"):
-        _run(cli + ["sync-notion", "-i", str(ROOT / "output" / "notion_pipeline.csv")], ok_fail=True)
+    if os.environ.get("NOTION_SYNC", "").lower() in {"1", "true", "yes"}:
+        _run(cli + ["export-pipeline", "-i", str(latest), "--basename", "notion_pipeline"])
+        if os.environ.get("NOTION_API_KEY") and os.environ.get("NOTION_DATABASE_ID"):
+            _run(cli + ["sync-notion", "-i", str(ROOT / "output" / "notion_pipeline.csv")], ok_fail=True)
     else:
-        log.info("Skip Notion — set NOTION_API_KEY + NOTION_DATABASE_ID in .env")
+        log.info("Skip Notion — set NOTION_SYNC=1 to enable optional Notion export")
 
     state["cycle"] = cycle
     state["last_run"] = datetime.now(timezone.utc).isoformat()

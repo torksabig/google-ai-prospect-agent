@@ -29,6 +29,11 @@ from search_agent import (
     _sort_by_phone_priority,
 )
 
+from call_list import (
+    DEFAULT_CALL_LIST_PATH,
+    append_to_call_list,
+    rebuild_call_list,
+)
 from notion_pipeline import (
     build_prospect_notes,
     load_notion_config,
@@ -330,6 +335,32 @@ def _print_filter_samples(rows: list[dict], *, label: str, n: int = 3) -> None:
         )
 
 
+def _update_call_list(
+    rows: list[dict],
+    *,
+    enabled: bool,
+    path: str,
+    source_run_id: str,
+    require_verification: bool = False,
+    rebuild: bool = False,
+) -> tuple[int, int]:
+    if not enabled or not rows:
+        return 0, 0
+    if rebuild:
+        return rebuild_call_list(
+            rows,
+            path,
+            source_run_id=source_run_id,
+            require_verification=require_verification,
+        )
+    return append_to_call_list(
+        rows,
+        path,
+        source_run_id=source_run_id,
+        require_verification=require_verification,
+    )
+
+
 def _apply_outreach_filter(
     rows: list[dict],
     *,
@@ -392,11 +423,12 @@ def cmd_search(args: argparse.Namespace) -> int:
         log.error("--industry required (or use --preset aether)")
         return 1
 
-    log.error(
-        "LLM-backed search is disabled in this repo. Use discover-prh + "
-        "enrich --scrape-first + verify instead."
-    )
-    return 2
+    if not getattr(args, "allow_llm", False):
+        log.error(
+            "LLM-backed search is disabled. Use hermes-search (free) or "
+            "hermes-search --provider gemini for grounded search."
+        )
+        return 2
 
     batch_size = min(15, max(4, args.batch_size))
     target_companies = args.limit
@@ -845,16 +877,18 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
         "provider": args.provider,
         "export_pipeline": args.export_pipeline,
         "sync_notion": args.sync_notion,
+        "update_call_list": args.update_call_list,
     }
     run_id = os.environ.get("PROSPECT_DASHBOARD_RUN_ID") or start_run(filters, source="cli")
     log_event("search_started", run_id=run_id, message="Hermes search started", details=filters)
 
     if args.provider == "gemini":
-        log.info("hermes-search --provider gemini → LLM grounded search (cli.py search)")
+        log.info("hermes-search --provider gemini → Gemini grounded search")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         gemini_args = argparse.Namespace(
             preset=None,
             country=args.country,
-            industry=",".join(args.industries.split(",")),
+            industry=args.industries,
             revenue=args.revenue,
             titles=args.titles,
             secondary_titles=args.secondary_titles,
@@ -867,90 +901,150 @@ def cmd_hermes_search(args: argparse.Namespace) -> int:
             rotate_industries=True,
             continue_from=args.continue_from,
             verify=args.verify,
-            direct_phone_first=False,
-            deep_pass=False,
-            max_deep_passes=0,
+            direct_phone_first=True,
+            deep_pass=True,
+            max_deep_passes=10,
             preserve_companies=True,
             scrape_first=True,
             no_llm=False,
             product_context="",
-            basename=args.basename,
+            basename=args.basename or f"gemini_prospects_{stamp}",
             output_dir=args.output_dir,
+            allow_llm=True,
         )
-        return cmd_search(gemini_args)
-
-    industries = [p.strip() for p in args.industries.split(",") if p.strip()]
-    titles = [p.strip() for p in args.titles.split(",") if p.strip()]
-    spec = HermesSearchSpec(
-        country=args.country,
-        industries=industries,
-        revenue=args.revenue,
-        titles=titles,
-        company_limit=args.limit,
-        contacts_per_company=args.contacts_per_company,
-        provider=args.provider,
-    )
-    seed = _load_seed_csv(Path(args.continue_from)) if args.continue_from else []
-    rows, meta = run_hermes_search(
-        spec,
-        serper_api_key=os.environ.get("GAP_SERPER_API_KEY", ""),
-        continue_from=seed,
-    )
-    if not rows:
-        log.warning(
-            "Hermes search returned 0 rows — try --provider serper with GAP_SERPER_API_KEY "
-            "or widen --industries"
+        rc = cmd_search(gemini_args)
+        if rc != 0:
+            log_event("search_failed", run_id=run_id, status="error", message="Gemini search failed")
+            finish_run(run_id, status="error", message="Gemini search failed")
+            return rc
+        out_dir = Path(args.output_dir)
+        latest = out_dir / "latest.csv"
+        if not latest.exists():
+            log_event("search_failed", run_id=run_id, status="error", message="No output CSV")
+            finish_run(run_id, status="error", message="No output CSV")
+            return 1
+        rows = _load_csv(latest)
+        if args.qualified_only:
+            rows, _ = _apply_outreach_filter(
+                rows,
+                require_verification=args.require_verification,
+            )
+        companies = _company_count(rows)
+        phones = sum(1 for r in rows if (r.get("contact_phone") or "").strip())
+        summary = {
+            "companies": companies,
+            "contact_rows": len(rows),
+            "phones": phones,
+            "provider": "gemini",
+            "csv": str(latest),
+        }
+        log_event(
+            "companies_found",
+            run_id=run_id,
+            status="success",
+            message=f"{companies} companies, {len(rows)} contacts",
+            details=summary,
         )
-        log_event("companies_found", run_id=run_id, status="warning", message="0 companies found")
+        print(
+            f"Gemini search: {companies} companies | {len(rows)} contact rows | "
+            f"{phones} with phones"
+        )
+        print(f"Latest → {latest}")
+    else:
+        industries = [p.strip() for p in args.industries.split(",") if p.strip()]
+        titles = [p.strip() for p in args.titles.split(",") if p.strip()]
+        spec = HermesSearchSpec(
+            country=args.country,
+            industries=industries,
+            revenue=args.revenue,
+            titles=titles,
+            company_limit=args.limit,
+            contacts_per_company=args.contacts_per_company,
+            provider=args.provider,
+        )
+        seed = _load_seed_csv(Path(args.continue_from)) if args.continue_from else []
+        rows, meta = run_hermes_search(
+            spec,
+            serper_api_key=os.environ.get("GAP_SERPER_API_KEY", ""),
+            continue_from=seed,
+        )
+        if not rows:
+            log.warning(
+                "Hermes search returned 0 rows — try --provider serper with GAP_SERPER_API_KEY "
+                "or widen --industries"
+            )
+            log_event("companies_found", run_id=run_id, status="warning", message="0 companies found")
 
-    if args.verify:
-        rows = verify_rows(rows)
+        if args.verify:
+            rows = verify_rows(rows)
 
-    if args.qualified_only:
-        rows, _ = _apply_outreach_filter(
+        if args.qualified_only:
+            rows, _ = _apply_outreach_filter(
+                rows,
+                require_verification=args.require_verification,
+            )
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(args.output_dir)
+        stem = args.basename or f"hermes_google_search_{stamp}"
+        csv_path, md_path = _write_outputs(
             rows,
+            out_dir,
+            stamp,
+            include_verify=args.verify,
+            basename=stem,
+        )
+        meta_path = out_dir / f"{stem}_meta.json"
+        meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+        latest = _write_latest(out_dir, csv_path)
+
+        companies = _company_count(rows)
+        phones = sum(1 for r in rows if (r.get("contact_phone") or "").strip())
+        summary = {
+            "companies": companies,
+            "contact_rows": len(rows),
+            "phones": phones,
+            "provider": args.provider,
+            "queries": meta.get("queries_run", 0),
+            "csv": str(csv_path),
+        }
+        log_event(
+            "companies_found",
+            run_id=run_id,
+            status="success",
+            message=f"{companies} companies, {len(rows)} contacts, {phones} phones",
+            details=summary,
+        )
+        print(
+            f"Hermes search: {companies} companies | {len(rows)} contact rows | "
+            f"{phones} with phones | provider={args.provider} | queries={meta.get('queries_run', 0)}"
+        )
+        print(f"CSV → {csv_path}")
+        print(f"Briefs → {md_path}")
+        print(f"Meta → {meta_path}")
+        print(f"Latest → {latest}")
+
+    out_dir = Path(args.output_dir)
+    call_list_path = Path(args.call_list_path)
+    if args.update_call_list:
+        added, skipped = _update_call_list(
+            rows,
+            enabled=True,
+            path=str(call_list_path),
+            source_run_id=run_id,
             require_verification=args.require_verification,
         )
-
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(args.output_dir)
-    stem = args.basename or f"hermes_google_search_{stamp}"
-    csv_path, md_path = _write_outputs(
-        rows,
-        out_dir,
-        stamp,
-        include_verify=args.verify,
-        basename=stem,
-    )
-    meta_path = out_dir / f"{stem}_meta.json"
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-    latest = _write_latest(out_dir, csv_path)
-
-    companies = _company_count(rows)
-    phones = sum(1 for r in rows if (r.get("contact_phone") or "").strip())
-    summary = {
-        "companies": companies,
-        "contact_rows": len(rows),
-        "phones": phones,
-        "provider": args.provider,
-        "queries": meta.get("queries_run", 0),
-        "csv": str(csv_path),
-    }
-    log_event(
-        "companies_found",
-        run_id=run_id,
-        status="success",
-        message=f"{companies} companies, {len(rows)} contacts, {phones} phones",
-        details=summary,
-    )
-    print(
-        f"Hermes search: {companies} companies | {len(rows)} contact rows | "
-        f"{phones} with phones | provider={args.provider} | queries={meta.get('queries_run', 0)}"
-    )
-    print(f"CSV → {csv_path}")
-    print(f"Briefs → {md_path}")
-    print(f"Meta → {meta_path}")
-    print(f"Latest → {latest}")
+        print(
+            f"Call list → {call_list_path} "
+            f"({added} added, {skipped} skipped as duplicate/non-outreach)"
+        )
+        log_event(
+            "call_list_update",
+            run_id=run_id,
+            status="success",
+            message=f"{added} added, {skipped} skipped",
+            details={"path": str(call_list_path), "added": added, "skipped": skipped},
+        )
 
     if args.export_pipeline or args.sync_notion:
         pipeline_path = out_dir / (args.pipeline_basename or "notion_pipeline")
@@ -1037,6 +1131,16 @@ def cmd_import_hermes(args: argparse.Namespace) -> int:
     print(f"Latest → {latest}")
     print(f"Briefs → {md_path}")
 
+    if getattr(args, "update_call_list", False):
+        added, skipped = _update_call_list(
+            rows,
+            enabled=True,
+            path=str(Path(args.call_list_path)),
+            source_run_id=stamp,
+            require_verification=getattr(args, "require_verification", False),
+        )
+        print(f"Call list → {args.call_list_path} ({added} added, {skipped} skipped)")
+
     if args.export_pipeline or args.sync_notion:
         pipeline_path = out_dir / (args.pipeline_basename or "notion_pipeline")
         if pipeline_path.suffix != ".csv":
@@ -1064,6 +1168,39 @@ def cmd_import_hermes(args: argparse.Namespace) -> int:
                 f"{stats['errors']} errors"
             )
             return 0 if stats["errors"] == 0 else 1
+    return 0
+
+
+def cmd_export_call_list(args: argparse.Namespace) -> int:
+    src = Path(args.input)
+    if not src.exists():
+        log.error("Input not found: %s", src)
+        return 1
+    rows = _load_csv(src)
+    if not rows:
+        log.error("No rows in %s", src)
+        return 1
+    if args.verify and not rows[0].get("phone_verification_status"):
+        rows = verify_rows(rows)
+
+    source_run_id = args.source_run_id or src.stem
+    path = Path(args.output or args.call_list_path)
+    if args.append:
+        added, skipped = append_to_call_list(
+            rows,
+            path,
+            source_run_id=source_run_id,
+            require_verification=args.require_verification,
+        )
+        print(f"Call list append → {path} ({added} added, {skipped} skipped)")
+    else:
+        count, skipped = rebuild_call_list(
+            rows,
+            path,
+            source_run_id=source_run_id,
+            require_verification=args.require_verification,
+        )
+        print(f"Call list rebuild → {path} ({count} rows, {skipped} deduped)")
     return 0
 
 
@@ -1305,8 +1442,25 @@ def main() -> int:
         help="Filter to outreach-ready contacts before export",
     )
     hs.add_argument("--require-verification", action="store_true")
+    hs.add_argument(
+        "--update-call-list",
+        action="store_true",
+        default=True,
+        help="Append outreach-ready leads to output/call_list.csv (default on)",
+    )
+    hs.add_argument(
+        "--no-update-call-list",
+        action="store_false",
+        dest="update_call_list",
+        help="Skip daily call list CSV update",
+    )
+    hs.add_argument(
+        "--call-list-path",
+        default=str(DEFAULT_CALL_LIST_PATH),
+        help="Path to cumulative call list CSV",
+    )
     hs.add_argument("--export-pipeline", action="store_true", help="Write notion_pipeline.csv")
-    hs.add_argument("--sync-notion", action="store_true", help="Push pipeline rows to Notion")
+    hs.add_argument("--sync-notion", action="store_true", help="Push pipeline rows to Notion (opt-in)")
     hs.add_argument("--pipeline-basename", default="notion_pipeline")
     hs.add_argument("--source", default="ICP Search")
     hs.add_argument("--state-file", default="output/notion_sync_state.json")
@@ -1319,6 +1473,22 @@ def main() -> int:
     h.add_argument("--output-dir", default="output")
     h.add_argument("--basename", help="Output stem")
     h.add_argument("--verify", action="store_true", help="Run phone verification")
+    h.add_argument(
+        "--update-call-list",
+        action="store_true",
+        default=True,
+        help="Append outreach-ready leads to call list (default on)",
+    )
+    h.add_argument(
+        "--no-update-call-list",
+        action="store_false",
+        dest="update_call_list",
+    )
+    h.add_argument(
+        "--call-list-path",
+        default=str(DEFAULT_CALL_LIST_PATH),
+    )
+    h.add_argument("--require-verification", action="store_true")
     h.add_argument("--export-pipeline", action="store_true", help="Write Notion pipeline CSVs")
     h.add_argument("--sync-notion", action="store_true", help="Sync exported pipeline to Notion")
     h.add_argument("--pipeline-basename", default="notion_pipeline")
@@ -1337,6 +1507,27 @@ def main() -> int:
         help="Require verified_for_outreach or allowed phone_verification_status",
     )
     f.set_defaults(func=cmd_filter)
+
+    cl = sub.add_parser(
+        "export-call-list",
+        help="Build or append output/call_list.csv from a prospect CSV",
+    )
+    cl.add_argument("--input", "-i", default="output/latest.csv")
+    cl.add_argument(
+        "--output",
+        "-o",
+        help="Call list path (default output/call_list.csv)",
+    )
+    cl.add_argument(
+        "--call-list-path",
+        default=str(DEFAULT_CALL_LIST_PATH),
+        help="Default call list path when --output omitted",
+    )
+    cl.add_argument("--append", action="store_true", help="Append with dedupe (default: rebuild)")
+    cl.add_argument("--verify", action="store_true", help="Run phone verify before filtering")
+    cl.add_argument("--require-verification", action="store_true")
+    cl.add_argument("--source-run-id", help="Tag rows with source run id")
+    cl.set_defaults(func=cmd_export_call_list)
 
     n = sub.add_parser("sync-notion", help="Push pipeline CSV rows to Notion database")
     n.add_argument("--input", "-i", default="output/notion_pipeline.csv")

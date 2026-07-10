@@ -17,11 +17,10 @@ python cli.py hermes-search \
   --revenue "10M - 5B EUR" \
   --limit 100 \
   --verify \
-  --export-pipeline \
-  --sync-notion
+  --update-call-list
 ```
 
-Hermes skill [`hermes-skill/SKILL.md`](hermes-skill/SKILL.md) maps NL → `hermes-search`. Gemini only with `--provider gemini`.
+Hermes skill [`hermes-skill/SKILL.md`](hermes-skill/SKILL.md) maps NL → `hermes-search`. Gemini only with `--provider gemini`. Notion sync is opt-in (`--sync-notion`).
 
 **Triggers:** `/prospect-search`, `/aether-prospect`
 
@@ -141,10 +140,21 @@ Or upload at **leads.teodor.fi → Uploads** with source `google-ai-prospect`.
 
 No API keys are required for the free workflow.
 
+### Gemini grounded search (`--provider gemini`)
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `GAP_GEMINI_API_KEY` | — | Required for Gemini mode |
+| `GAP_GEMINI_MODEL` | `gemini-2.5-flash` | GA model ID; default for reliable structured JSON and contact quality ($0.30 / 1M input tokens) |
+| `GAP_PROVIDER` | `google` | Use `openrouter` only if routing via OpenRouter |
+
+**Model note (Jul 2026):** Default is `gemini-2.5-flash` after Flash-Lite 503s and weaker JSON/contact quality. Use `gemini-2.5-flash-lite` only for cost-sensitive runs (~3× cheaper input).
+
 ## Key files
 
 | File | Purpose |
 |------|---------|
+| `output/call_list.csv` | **Primary dial sheet** — cumulative outreach-ready leads (deduped) |
 | `output/latest.csv` | Rolling enriched list (Hermes + daily workflow input) |
 | `output/web_prospects_20260707_115644.csv` | Original 200-company seed |
 | `data/google_ai_prospects_verified.csv` | Dashboard export target |

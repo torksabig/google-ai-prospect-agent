@@ -1,5 +1,7 @@
 # Notion pipeline setup
 
+> **Primary outreach output is `output/call_list.csv`** (updated each `hermes-search` run). Notion sync is optional — use when you want CRM-style pipeline in Notion.
+
 Sync ICP search results to a **Notion database** (your pipeline list).
 
 ## 1. Create Notion integration

@@ -424,10 +424,12 @@ def _grounded_generate_google(prompt: str, *, json_mode: bool = True) -> tuple[s
 
 
 def _grounded_generate(prompt: str, *, json_mode: bool = True) -> tuple[str | None, Any]:
-    raise RuntimeError(
-        "LLM-backed search is disabled in this repo. Use discover-prh + "
-        "enrich --scrape-first + verify instead."
-    )
+    from config import get_settings, resolve_provider
+
+    provider = resolve_provider(get_settings())
+    if provider == "openrouter":
+        return _grounded_generate_openrouter(prompt, json_mode=json_mode)
+    return _grounded_generate_google(prompt, json_mode=json_mode)
 
 
 def search_prospects(
